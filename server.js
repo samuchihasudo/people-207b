@@ -62,6 +62,24 @@ const routes = {
     } catch (e) { json(res, { entry, error: 'The assistant is unavailable. Please try again.' }); }
   },
 
+  'POST /api/settings/save': async (req, res) => {
+    const { device, notifications, darkMode, voiceInput } = await readBody(req);
+    if (!/^[a-zA-Z0-9-]{20,100}$/.test(device || '')) return json(res, { error: 'Invalid device' }, 400);
+    const all = store.read('settings', {});
+    all[device] = { notifications: !!notifications, darkMode: darkMode !== false, voiceInput: !!voiceInput, updatedAt: new Date().toISOString() };
+    store.write('settings', all);
+    json(res, { ok: true });
+  },
+
+  'POST /api/settings/save': async (req, res) => {
+    const { device, notifications, darkMode, voiceInput } = await readBody(req);
+    if (!/^[a-zA-Z0-9-]{20,100}$/.test(device || '')) return json(res, { error: 'Invalid device' }, 400);
+    const all = store.read('settings', {});
+    all[device] = { notifications: !!notifications, darkMode: darkMode !== false, voiceInput: !!voiceInput, updatedAt: new Date().toISOString() };
+    store.write('settings', all);
+    json(res, { ok: true });
+  },
+
   // Example data. Replace with your app's own.
   'GET /api/items': (req, res) => json(res, store.read('items')),
   'POST /api/items': async (req, res) => {
