@@ -1,87 +1,63 @@
-// The first screen. A working example of the one pattern every screen uses:
-// load from this app's server with api() and show errors in words. While the
-// server wakes, the app's frame covers the screen on its own (app/_layout.tsx).
-// Replace it with the real app.
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
+import * as SecureStore from 'expo-secure-store';
+import { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '../lib/api';
+import { shrinkPhoto } from '../lib/shrink-photo';
 
-type Item = { id: string; text: string; createdAt: string };
-
-export default function Home() {
-  const [items, setItems] = useState<Item[] | null>(null);
-  const [draft, setDraft] = useState('');
-  const [error, setError] = useState('');
-
-  const load = useCallback(async () => {
-    setError('');
-    try {
-      setItems(await api<Item[]>('GET', '/api/items'));
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }, []);
-
-  useEffect(() => { load(); }, [load]);
-
-  const add = async () => {
-    const text = draft.trim();
-    if (!text) return;
-    setError('');
-    try {
-      const item = await api<Item>('POST', '/api/items', { text });
-      setItems((prev) => [item, ...(prev || [])]);
-      setDraft('');
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  };
-
-  return (
-    <SafeAreaView style={styles.screen}>
-      <Text style={styles.title}>My App</Text>
-      <View style={styles.row}>
-        <TextInput
-          style={styles.input}
-          value={draft}
-          onChangeText={setDraft}
-          onSubmitEditing={add}
-          placeholder="Add an item"
-          placeholderTextColor="#8a8aa0"
-          returnKeyType="done"
-        />
-        <Pressable style={styles.button} onPress={add} accessibilityRole="button" accessibilityLabel="Add">
-          <Ionicons name="add" size={24} color="#fff" />
-        </Pressable>
-      </View>
-      {!!error && (
-        <Pressable onPress={load} accessibilityRole="button">
-          <Text style={styles.error}>{error} Tap to retry.</Text>
-        </Pressable>
-      )}
-      {items === null && !error ? (
-        <ActivityIndicator style={{ marginTop: 32 }} />
-      ) : (
-        <FlatList
-          data={items || []}
-          keyExtractor={(i) => i.id}
-          renderItem={({ item }) => <Text style={styles.item}>{item.text}</Text>}
-          ListEmptyComponent={<Text style={styles.note}>Nothing yet. Add the first item.</Text>}
-        />
-      )}
-    </SafeAreaView>
-  );
+type Message = { id: string; role: 'user' | 'assistant'; text: string; image?: string; day?: string; createdAt: string };
+const localDay = (date: Date) => `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+function streak(messages: Message[]) {
+  const days = new Set(messages.filter(m => m.role === 'user' && m.day).map(m => m.day));
+  const d = new Date();
+  if (!days.has(localDay(d))) d.setDate(d.getDate()-1);
+  let count = 0;
+  while (days.has(localDay(d))) { count++; d.setDate(d.getDate()-1); }
+  return count;
 }
-
-const styles = StyleSheet.create({
-  screen: { flex: 1, paddingHorizontal: 20, backgroundColor: '#0f0f14' },
-  title: { fontSize: 28, fontWeight: '700', color: '#fff', marginTop: 16, marginBottom: 12 },
-  row: { flexDirection: 'row', gap: 10, marginBottom: 12 },
-  input: { flex: 1, backgroundColor: '#1c1c26', color: '#fff', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16 },
-  button: { backgroundColor: '#7c5cff', borderRadius: 12, paddingHorizontal: 14, justifyContent: 'center', alignItems: 'center' },
-  item: { color: '#e8e8f0', fontSize: 17, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#2a2a36' },
-  note: { color: '#8a8aa0', fontSize: 15, marginVertical: 8 },
-  error: { color: '#f87171', fontSize: 15, marginVertical: 8 },
+async function deviceId() {
+  const key = 'noir_device_id';
+  let id = Platform.OS === 'web' ? globalThis.localStorage?.getItem(key) : await SecureStore.getItemAsync(key);
+  if (!id) {
+    id = `device-${Date.now()}-${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
+    if (Platform.OS === 'web') globalThis.localStorage?.setItem(key, id); else await SecureStore.setItemAsync(key, id);
+  }
+  return id;
+}
+export default function Chat() {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [device, setDevice] = useState('');
+  const [text, setText] = useState('');
+  const [image, setImage] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const input = useRef<TextInput>(null);
+  const scroll = useRef<ScrollView>(null);
+  useEffect(() => { (async () => { try { const id = await deviceId(); setDevice(id); setMessages(await api<Message[]>('POST','/api/conversation/load',{ device: id })); } catch (e) { setError((e as Error).message); } finally { setLoading(false); } })(); }, []);
+  const pick = async () => { try { const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 1 }); if (!result.canceled) { const photo = await shrinkPhoto(result.assets[0]); setImage(photo.dataUrl); } } catch (e) { setError((e as Error).message); } };
+  const send = async () => {
+    if ((!text.trim() && !image) || busy || !device) return;
+    setBusy(true); setError('');
+    try {
+      const result = await api<{entry: Message; reply?: Message; error?: string}>('POST','/api/conversation/send',{ device, text, image, day: localDay(new Date()) });
+      setMessages(current => [...current, result.entry, ...(result.reply ? [result.reply] : [])]); setText(''); setImage('');
+      if (result.error) setError(result.error);
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  };
+  return <SafeAreaView style={s.screen} edges={['top','bottom']}><KeyboardAvoidingView style={s.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <View style={s.header}><View style={s.brand}><View style={s.brandIcon}><Ionicons name="sparkles" size={19} color="#0a0a0a" /></View><View><Text style={s.brandName}>NOIR</Text><Text style={s.brandSub}>YOUR AI SPACE</Text></View></View><View style={s.streak}><Ionicons name="flame-outline" size={17} color="#a78bfa"/><Text style={s.streakText}>{streak(messages)} day streak</Text></View></View>
+    <ScrollView ref={scroll} contentContainerStyle={s.content} onContentSizeChange={() => scroll.current?.scrollToEnd({ animated: true })} keyboardShouldPersistTaps="handled">
+      {loading ? <ActivityIndicator color="#a78bfa" style={{marginTop: 60}} /> : messages.length === 0 ? <View style={s.welcome}><View style={s.orb}><Ionicons name="sparkles-outline" size={36} color="#a78bfa" /></View><Text style={s.eyebrow}>A LITTLE SPACE FOR BIG IDEAS</Text><Text style={s.title}>What's on your mind?</Text><Text style={s.subtitle}>Ask a question, share a thought, or add a photo. Start anywhere.</Text><Pressable accessibilityRole="button" style={s.quick} onPress={() => input.current?.focus()}><Ionicons name="add" size={23} color="#0a0a0a"/><Text style={s.quickText}>Start a new entry</Text><Ionicons name="arrow-forward" size={19} color="#0a0a0a"/></Pressable><Text style={s.hint}>A MOMENT A DAY ADDS UP</Text></View> : messages.map(m => <View key={m.id} style={[s.message, m.role === 'user' ? s.user : s.assistant]}><Text style={s.messageLabel}>{m.role === 'user' ? 'YOU' : 'NOIR'}</Text>{!!m.image && <Image source={{uri:m.image}} style={s.photo} />}{!!m.text && <Text style={s.messageText}>{m.text}</Text>}</View>)}
+      {busy && <View style={s.thinking}><ActivityIndicator size="small" color="#a78bfa"/><Text style={s.muted}>Thinking...</Text></View>}
+    </ScrollView>
+    <View style={s.bottom}>{!!error && <Text style={s.error}>{error}</Text>}{!!image && <View style={s.preview}><Image source={{uri:image}} style={s.thumb}/><Text style={s.muted}>Photo attached</Text><Pressable accessibilityRole="button" accessibilityLabel="Remove photo" onPress={() => setImage('')} style={s.remove}><Ionicons name="close" size={20} color="#ddd"/></Pressable></View>}
+      <View style={s.composer}><Pressable accessibilityRole="button" accessibilityLabel="Add photo" onPress={pick} style={s.iconButton}><Ionicons name="add-circle-outline" size={25} color="#a78bfa"/></Pressable><TextInput ref={input} value={text} onChangeText={setText} placeholder="Ask or add an entry..." placeholderTextColor="#777" style={s.input} multiline /><Pressable accessibilityRole="button" accessibilityLabel="Send message" onPress={send} disabled={busy || loading} style={s.send}><Ionicons name="arrow-up" size={22} color="#0a0a0a"/></Pressable></View><Text style={s.disclaimer}>AI can make mistakes. Check important information.</Text></View>
+  </KeyboardAvoidingView></SafeAreaView>;
+}
+const s = StyleSheet.create({
+  screen:{flex:1,backgroundColor:'#0a0a0a'}, flex:{flex:1}, header:{height:76, paddingHorizontal:22, flexDirection:'row',alignItems:'center',justifyContent:'space-between',borderBottomWidth:1,borderBottomColor:'#242424'},brand:{flexDirection:'row',alignItems:'center',gap:10},brandIcon:{width:38,height:38,borderRadius:13,backgroundColor:'#a78bfa',alignItems:'center',justifyContent:'center'},brandName:{color:'#fff',fontSize:16,fontWeight:'800',letterSpacing:2},brandSub:{color:'#858585',fontSize:9,letterSpacing:1.2,marginTop:3},streak:{flexDirection:'row',gap:6,alignItems:'center',backgroundColor:'#1c1923',borderWidth:1,borderColor:'#404040',borderRadius:22,paddingHorizontal:12,paddingVertical:9},streakText:{color:'#d9ccff',fontSize:12,fontWeight:'600'},content:{paddingHorizontal:22,paddingBottom:24,flexGrow:1},welcome:{flex:1,alignItems:'center',justifyContent:'center',paddingBottom:45},orb:{width:80,height:80,borderRadius:28,backgroundColor:'#211a30',borderWidth:1,borderColor:'#51416e',alignItems:'center',justifyContent:'center',marginBottom:30},eyebrow:{fontSize:10,letterSpacing:2,color:'#a78bfa',fontWeight:'700',textAlign:'center'},title:{color:'#f9f8fc',fontSize:32,fontWeight:'700',letterSpacing:-1,marginTop:13,textAlign:'center'},subtitle:{color:'#999',fontSize:15,lineHeight:23,textAlign:'center',maxWidth:300,marginTop:12},quick:{marginTop:33,backgroundColor:'#a78bfa',borderRadius:16,minHeight:58,width:'100%',maxWidth:330,paddingHorizontal:18,flexDirection:'row',alignItems:'center',justifyContent:'space-between'},quickText:{fontSize:15,fontWeight:'700',color:'#0a0a0a'},hint:{fontSize:9,letterSpacing:1.6,color:'#676767',marginTop:25},message:{padding:16,borderRadius:18,marginTop:16,maxWidth:'93%'},user:{alignSelf:'flex-end',backgroundColor:'#25202e',borderWidth:1,borderColor:'#40364e'},assistant:{alignSelf:'flex-start',backgroundColor:'#171717',borderWidth:1,borderColor:'#404040'},messageLabel:{color:'#a78bfa',fontSize:10,fontWeight:'800',letterSpacing:1.4,marginBottom:9},messageText:{color:'#f0eef3',fontSize:15,lineHeight:23},photo:{width:210,height:160,borderRadius:12,marginBottom:10},thinking:{flexDirection:'row',alignItems:'center',gap:10,marginTop:20},muted:{color:'#999',fontSize:13},bottom:{paddingHorizontal:16,paddingBottom:8},composer:{flexDirection:'row',alignItems:'flex-end',backgroundColor:'#1a1a1a',borderColor:'#404040',borderWidth:1,borderRadius:22,padding:7},iconButton:{width:44,height:44,alignItems:'center',justifyContent:'center'},input:{flex:1,color:'#fff',fontSize:16,maxHeight:120,minHeight:44,paddingVertical:11,paddingHorizontal:4},send:{width:44,height:44,borderRadius:15,backgroundColor:'#a78bfa',alignItems:'center',justifyContent:'center'},disclaimer:{color:'#666',fontSize:10,textAlign:'center',marginTop:10},error:{color:'#ff9a9a',fontSize:13,marginBottom:9},preview:{flexDirection:'row',alignItems:'center',gap:10,marginBottom:9},thumb:{width:48,height:48,borderRadius:8},remove:{marginLeft:'auto',padding:10}
 });

@@ -37,6 +37,31 @@ const MIME = {
 const routes = {
   'GET /health': (req, res) => json(res, { status: 'ok', uptime: process.uptime(), release: currentRelease() }),
 
+  'POST /api/conversation/load': async (req, res) => {
+    const { device } = await readBody(req);
+    if (!/^[a-zA-Z0-9-]{20,100}$/.test(device || '')) return json(res, { error: 'Invalid device' }, 400);
+    const all = store.read('conversations', {});
+    json(res, all[device] || []);
+  },
+  'POST /api/conversation/send': async (req, res) => {
+    const { device, text, image, day } = await readBody(req);
+    if (!/^[a-zA-Z0-9-]{20,100}$/.test(device || '') || (!String(text || '').trim() && !image)) return json(res, { error: 'Write a message or add a photo.' }, 400);
+    if (image && !/^data:image\/jpeg;base64,/.test(image)) return json(res, { error: 'Invalid photo.' }, 400);
+    const all = store.read('conversations', {});
+    const messages = all[device] || [];
+    const entry = { id: crypto.randomUUID(), role: 'user', text: String(text || '').trim().slice(0, 5000), image: image || null, day: /^\d{4}-\d{2}-\d{2}$/.test(day || '') ? day : new Date().toISOString().slice(0, 10), createdAt: new Date().toISOString() };
+    messages.push(entry); all[device] = messages; store.write('conversations', all);
+    try {
+      const history = messages.slice(-20).map(m => ({ role: m.role, content: m.image ? [{ type: 'text', text: m.text || 'Please describe this image.' }, { type: 'image_url', image_url: { url: m.image } }] : m.text }));
+      const response = await fetch(process.env.VIBEKIT_AI_URL, { method: 'POST', headers: { Authorization: `Bearer ${process.env.VIBEKIT_AI_TOKEN}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: history }) });
+      const result = await response.json();
+      if (!response.ok || !result.text) return json(res, { entry, error: result.error || result.message || 'The assistant could not respond. Try again.' });
+      const reply = { id: crypto.randomUUID(), role: 'assistant', text: result.text, createdAt: new Date().toISOString() };
+      const latest = store.read('conversations', {}); latest[device] = [...(latest[device] || []), reply]; store.write('conversations', latest);
+      json(res, { entry, reply });
+    } catch (e) { json(res, { entry, error: 'The assistant is unavailable. Please try again.' }); }
+  },
+
   // Example data. Replace with your app's own.
   'GET /api/items': (req, res) => json(res, store.read('items')),
   'POST /api/items': async (req, res) => {
