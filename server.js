@@ -43,6 +43,13 @@ const routes = {
     const all = store.read('conversations', {});
     json(res, all[device] || []);
   },
+  'GET /api/conversation/load': (req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+    const device = url.searchParams.get('device');
+    if (!/^[a-zA-Z0-9-]{20,100}$/.test(device || '')) return json(res, { error: 'Invalid device' }, 400);
+    const all = store.read('conversations', {});
+    json(res, all[device] || []);
+  },
   'POST /api/conversation/send': async (req, res) => {
     const { device, text, image, day } = await readBody(req);
     if (!/^[a-zA-Z0-9-]{20,100}$/.test(device || '') || (!String(text || '').trim() && !image)) return json(res, { error: 'Write a message or add a photo.' }, 400);
@@ -60,15 +67,6 @@ const routes = {
       const latest = store.read('conversations', {}); latest[device] = [...(latest[device] || []), reply]; store.write('conversations', latest);
       json(res, { entry, reply });
     } catch (e) { json(res, { entry, error: 'The assistant is unavailable. Please try again.' }); }
-  },
-
-  'POST /api/settings/save': async (req, res) => {
-    const { device, notifications, darkMode, voiceInput } = await readBody(req);
-    if (!/^[a-zA-Z0-9-]{20,100}$/.test(device || '')) return json(res, { error: 'Invalid device' }, 400);
-    const all = store.read('settings', {});
-    all[device] = { notifications: !!notifications, darkMode: darkMode !== false, voiceInput: !!voiceInput, updatedAt: new Date().toISOString() };
-    store.write('settings', all);
-    json(res, { ok: true });
   },
 
   'POST /api/settings/save': async (req, res) => {
